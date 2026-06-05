@@ -17,6 +17,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
+$healthPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '/';
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && in_array($healthPath, ['/api/health', '/health'], true)) {
+    json(['status' => 'ok', 'service' => 'pharmacare-api']);
+}
+
 try {
     $pdo = db();
     migrate($pdo);
