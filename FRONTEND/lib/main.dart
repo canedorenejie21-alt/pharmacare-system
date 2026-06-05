@@ -1,7 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
+
+import 'google_sign_in_button.dart';
 
 void main() {
   runApp(const PharmaCareApp());
@@ -117,6 +121,12 @@ const apiBaseUrl = String.fromEnvironment(
   defaultValue: 'http://127.0.0.1:8000/api',
 );
 
+const googleWebClientId = String.fromEnvironment(
+  'GOOGLE_WEB_CLIENT_ID',
+  defaultValue:
+      '285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com',
+);
+
 enum UserRole { patient, pharmacist, admin }
 
 class BackendUser {
@@ -171,6 +181,19 @@ class ApiClient {
       Uri.parse('$baseUrl/login'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'email': email, 'password': password}),
+    );
+    final data = _decode(response);
+    return BackendSession(
+      token: data['token'] as String,
+      user: BackendUser.fromJson(data['user'] as Map<String, dynamic>),
+    );
+  }
+
+  Future<BackendSession> googleLogin(String idToken) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/google-login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'id_token': idToken}),
     );
     final data = _decode(response);
     return BackendSession(
@@ -301,8 +324,11 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _loading = false;
   bool _registering = false;
   bool _showPassword = false;
+  bool _googleLoading = false;
   String? _error;
   String? _success;
+  late final Future<void> _googleInit;
+  StreamSubscription<GoogleSignInAuthenticationEvent>? _googleSubscription;
 
   @override
   void initState() {
@@ -312,6 +338,20 @@ class _LoginScreenState extends State<LoginScreen> {
     _registerNameController = TextEditingController();
     _registerEmailController = TextEditingController();
     _registerPasswordController = TextEditingController();
+    _googleInit = GoogleSignIn.instance.initialize(
+      clientId: googleWebClientId,
+      serverClientId: googleWebClientId,
+    );
+    _googleInit.then((_) {
+      _googleSubscription = GoogleSignIn.instance.authenticationEvents.listen(
+        _handleGoogleAuthEvent,
+        onError: (Object error) {
+          if (mounted) {
+            setState(() => _error = error.toString());
+          }
+        },
+      );
+    });
   }
 
   @override
@@ -321,6 +361,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _registerNameController.dispose();
     _registerEmailController.dispose();
     _registerPasswordController.dispose();
+    _googleSubscription?.cancel();
     super.dispose();
   }
 
@@ -430,17 +471,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 18),
                         const DividerWithText(text: 'OR'),
                         const SizedBox(height: 18),
-                        OutlinedButton.icon(
-                          onPressed: () => _showInfo('Google login UI is ready; OAuth client is not connected yet.'),
-                          icon: const Text(
-                            'G',
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.w900,
-                              color: Color(0xFF2567D8),
-                            ),
-                          ),
-                          label: const Text('Continue with Google'),
+                        googleSignInButton(
+                          onPressed: _loading || _googleLoading
+                              ? null
+                              : _loginWithGoogle,
                         ),
                         const SizedBox(height: 18),
                         Row(
@@ -463,6 +497,61 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _handleGoogleAuthEvent(
+    GoogleSignInAuthenticationEvent event,
+  ) async {
+    if (event is GoogleSignInAuthenticationEventSignIn) {
+      await _finishGoogleLogin(event.user.authentication.idToken);
+    }
+  }
+
+  Future<void> _loginWithGoogle() async {
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    try {
+      await _googleInit;
+      if (!GoogleSignIn.instance.supportsAuthenticate()) {
+        _showInfo('Use the Google button above to continue.');
+        return;
+      }
+      final account = await GoogleSignIn.instance.authenticate();
+      await _finishGoogleLogin(account.authentication.idToken);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = error.toString());
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _googleLoading = false);
+      }
+    }
+  }
+
+  Future<void> _finishGoogleLogin(String? idToken) async {
+    if (idToken == null || idToken.isEmpty) {
+      setState(() => _error = 'Google did not return an ID token.');
+      return;
+    }
+    setState(() {
+      _googleLoading = true;
+      _error = null;
+    });
+    try {
+      final session = await widget.api.googleLogin(idToken);
+      widget.onLogin(session);
+    } catch (error) {
+      if (mounted) {
+        setState(() => _error = error.toString());
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _googleLoading = false);
+      }
+    }
   }
 
   Future<void> _login() async {

@@ -41,6 +41,8 @@ DB_DATABASE=pharmacare_db
 DB_USERNAME=pharmacare_user
 DB_PASSWORD=CHANGE_THIS_PASSWORD
 FRONTEND_ORIGIN=https://your-frontend-domain.com
+GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
+GOOGLE_ANDROID_CLIENT_ID=
 ```
 
 Health check:
@@ -82,6 +84,8 @@ DB_DATABASE=pharmacare_db
 DB_USERNAME=pharmacare_user
 DB_PASSWORD=your-mysql-password
 FRONTEND_ORIGIN=https://your-frontend-domain.com
+GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
+GOOGLE_ANDROID_CLIENT_ID=
 ```
 
 Render does not provide free MySQL by default. Use an external MySQL provider such as Railway, Aiven, PlanetScale-compatible MySQL, Clever Cloud, or a cPanel/Hostinger MySQL database that allows remote connections.
@@ -103,7 +107,9 @@ https://pharmacare-api.onrender.com/api/health
 From `FRONTEND`:
 
 ```bash
-flutter build web --release --dart-define=API_BASE_URL=https://api.yourdomain.com/api
+flutter build web --release \
+  --dart-define=API_BASE_URL=https://api.yourdomain.com/api \
+  --dart-define=GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
 ```
 
 Upload this folder to your frontend hosting:
@@ -118,7 +124,9 @@ For a real hosted backend:
 
 ```bash
 cd ~/pharmacare/FRONTEND
-flutter build apk --release --dart-define=API_BASE_URL=https://api.yourdomain.com/api
+flutter build apk --release \
+  --dart-define=API_BASE_URL=https://api.yourdomain.com/api \
+  --dart-define=GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
 ```
 
 APK output:
@@ -138,7 +146,9 @@ Then:
 
 ```bash
 cd ~/pharmacare/FRONTEND
-flutter build apk --debug --dart-define=API_BASE_URL=http://YOUR_LAPTOP_IP:8000/api
+flutter build apk --debug \
+  --dart-define=API_BASE_URL=http://YOUR_LAPTOP_IP:8000/api \
+  --dart-define=GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
 ```
 
 ## Seeded Demo Logins

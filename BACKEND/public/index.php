@@ -550,11 +550,14 @@ function dispatch(PDO $pdo): void
         json(['status' => 'ok', 'service' => 'pharmacare-api']);
     }
 
-    $public = in_array($parts[0] ?? '', ['login', 'register'], true);
+    $public = in_array($parts[0] ?? '', ['login', 'register', 'google-login'], true);
     $user = $public ? null : currentUser($pdo);
 
     if ($method === 'POST' && route($parts, ['login'])) {
         login($pdo);
+    }
+    if ($method === 'POST' && route($parts, ['google-login'])) {
+        googleLogin($pdo);
     }
     if ($method === 'POST' && route($parts, ['register'])) {
         registerPatient($pdo);
@@ -616,16 +619,49 @@ function login(PDO $pdo): void
         json(['error' => 'Account is disabled'], 403);
     }
 
-    $token = bin2hex(random_bytes(32));
-    insert($pdo, 'auth_tokens', [
-        'token' => $token,
-        'user_id' => $user['user_id'],
-        'expires_at' => date('Y-m-d H:i:s', time() + 86400),
-    ]);
-    audit($pdo, $user, 'Login', 'User logged in.');
+    json(issueSession($pdo, $user, 'Login', 'User logged in.'));
+}
 
-    unset($user['password_hash']);
-    json(['token' => $token, 'user' => publicUser($user)]);
+function googleLogin(PDO $pdo): void
+{
+    $body = body();
+    $idToken = trim((string) ($body['id_token'] ?? ''));
+    if ($idToken === '') {
+        json(['error' => 'Google ID token is required'], 422);
+    }
+
+    $googleUser = verifyGoogleIdToken($idToken);
+    $email = strtolower(trim((string) $googleUser['email']));
+    $fullName = trim((string) ($googleUser['name'] ?? $email));
+
+    $user = queryOne($pdo, 'SELECT * FROM users WHERE email = ? LIMIT 1', [$email]);
+    if ($user) {
+        if ((int) ($user['is_active'] ?? 1) !== 1) {
+            json(['error' => 'Account is disabled'], 403);
+        }
+        json(issueSession($pdo, $user, 'Google login', 'User logged in with Google.'));
+    }
+
+    [$first, $last] = splitName($fullName);
+    $pdo->beginTransaction();
+    $patientId = insert($pdo, 'patients', [
+        'first_name' => $first,
+        'last_name' => $last,
+        'email' => $email,
+    ]);
+    $userId = insert($pdo, 'users', [
+        'username' => $email,
+        'full_name' => $fullName,
+        'email' => $email,
+        'password_hash' => password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT),
+        'role' => 'patient',
+        'is_active' => 1,
+        'patient_id' => $patientId,
+    ]);
+    $pdo->commit();
+
+    $user = findRow($pdo, 'users', 'user_id', $userId);
+    json(issueSession($pdo, $user, 'Google registration', 'Patient registered with Google.'), 201);
 }
 
 function registerPatient(PDO $pdo): void
@@ -1083,6 +1119,64 @@ function publicUser(array $user): array
         'patient_id' => isset($user['patient_id']) ? (int) $user['patient_id'] : null,
         'pharmacist_id' => isset($user['pharmacist_id']) ? (int) $user['pharmacist_id'] : null,
     ];
+}
+
+function issueSession(PDO $pdo, array $user, string $action, string $description): array
+{
+    $token = bin2hex(random_bytes(32));
+    insert($pdo, 'auth_tokens', [
+        'token' => $token,
+        'user_id' => $user['user_id'],
+        'expires_at' => date('Y-m-d H:i:s', time() + 86400),
+    ]);
+    audit($pdo, $user, $action, $description);
+
+    unset($user['password_hash']);
+    return ['token' => $token, 'user' => publicUser($user)];
+}
+
+function verifyGoogleIdToken(string $idToken): array
+{
+    $clientIds = array_values(array_filter([
+        env(
+            'GOOGLE_WEB_CLIENT_ID',
+            '285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com'
+        ),
+        env('GOOGLE_ANDROID_CLIENT_ID', ''),
+    ]));
+    if (!$clientIds) {
+        json(['error' => 'Google OAuth is not configured'], 500);
+    }
+
+    $url = 'https://oauth2.googleapis.com/tokeninfo?id_token=' . urlencode($idToken);
+    $context = stream_context_create([
+        'http' => [
+            'timeout' => 10,
+        ],
+    ]);
+    $response = @file_get_contents($url, false, $context);
+    if ($response === false) {
+        json(['error' => 'Unable to verify Google token'], 401);
+    }
+
+    $payload = json_decode($response, true);
+    if (!is_array($payload) || isset($payload['error_description'])) {
+        json(['error' => 'Invalid Google token'], 401);
+    }
+    if (!in_array((string) ($payload['aud'] ?? ''), $clientIds, true)) {
+        json(['error' => 'Google token audience is not allowed'], 401);
+    }
+    if ((int) ($payload['exp'] ?? 0) < time()) {
+        json(['error' => 'Google token is expired'], 401);
+    }
+    if (!filter_var($payload['email'] ?? '', FILTER_VALIDATE_EMAIL)) {
+        json(['error' => 'Google account email is invalid'], 401);
+    }
+    if (!in_array((string) ($payload['email_verified'] ?? ''), ['true', '1'], true)) {
+        json(['error' => 'Google account email is not verified'], 401);
+    }
+
+    return $payload;
 }
 
 function bearerToken(): ?string
