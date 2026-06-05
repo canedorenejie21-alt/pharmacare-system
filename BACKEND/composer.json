@@ -1,0 +1,11 @@
+{
+  "name": "pharmacare/backend",
+  "description": "PharmaCare PHP REST API",
+  "type": "project",
+  "require": {
+    "php": ">=8.3"
+  },
+  "scripts": {
+    "start": "./start-render.sh"
+  }
+}
