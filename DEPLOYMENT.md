@@ -42,7 +42,7 @@ DB_USERNAME=pharmacare_user
 DB_PASSWORD=CHANGE_THIS_PASSWORD
 FRONTEND_ORIGIN=https://your-frontend-domain.com
 GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
-GOOGLE_ANDROID_CLIENT_ID=
+GOOGLE_ANDROID_CLIENT_ID=285680876693-s8til6nokgqcvuv15eng4n254tbfrcd7.apps.googleusercontent.com
 ```
 
 Health check:
@@ -85,7 +85,7 @@ DB_USERNAME=pharmacare_user
 DB_PASSWORD=your-mysql-password
 FRONTEND_ORIGIN=https://your-frontend-domain.com
 GOOGLE_WEB_CLIENT_ID=285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
-GOOGLE_ANDROID_CLIENT_ID=
+GOOGLE_ANDROID_CLIENT_ID=285680876693-s8til6nokgqcvuv15eng4n254tbfrcd7.apps.googleusercontent.com
 ```
 
 Render does not provide free MySQL by default. Use an external MySQL provider such as Railway, Aiven, PlanetScale-compatible MySQL, Clever Cloud, or a cPanel/Hostinger MySQL database that allows remote connections.

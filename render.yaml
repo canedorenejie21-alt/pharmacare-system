@@ -27,4 +27,4 @@ services:
       - key: GOOGLE_WEB_CLIENT_ID
         value: 285680876693-fmqubravnj1d5hoh5aseovjetem74tlm.apps.googleusercontent.com
       - key: GOOGLE_ANDROID_CLIENT_ID
-        sync: false
+        value: 285680876693-s8til6nokgqcvuv15eng4n254tbfrcd7.apps.googleusercontent.com
