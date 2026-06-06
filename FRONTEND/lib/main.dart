@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 
@@ -151,7 +152,8 @@ class BackendUser {
   factory BackendUser.fromJson(Map<String, dynamic> json) {
     return BackendUser(
       id: (json['id'] ?? json['user_id']) as int,
-      fullName: json['full_name'] as String? ?? json['username'] as String? ?? '',
+      fullName:
+          json['full_name'] as String? ?? json['username'] as String? ?? '',
       email: json['email'] as String? ?? '',
       role: roleFromString(json['role'] as String? ?? 'patient'),
       isActive: (json['is_active'] as int? ?? 1) == 1,
@@ -174,7 +176,8 @@ class ApiClient {
   final String baseUrl;
   final String? token;
 
-  ApiClient authenticated(String token) => ApiClient(baseUrl: baseUrl, token: token);
+  ApiClient authenticated(String token) =>
+      ApiClient(baseUrl: baseUrl, token: token);
 
   Future<BackendSession> login(String email, String password) async {
     final response = await http.post(
@@ -203,12 +206,27 @@ class ApiClient {
   }
 
   Future<List<Map<String, dynamic>>> list(String path) async {
-    final response = await http.get(Uri.parse('$baseUrl/$path'), headers: _headers);
+    final response = await http.get(
+      Uri.parse('$baseUrl/$path'),
+      headers: _headers,
+    );
     final data = _decode(response);
     return (data['data'] as List).cast<Map<String, dynamic>>();
   }
 
-  Future<Map<String, dynamic>> post(String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> get(String path) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/$path'),
+      headers: _headers,
+    );
+    final data = _decode(response);
+    return data['data'] as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> post(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
     final response = await http.post(
       Uri.parse('$baseUrl/$path'),
       headers: {..._headers, 'Content-Type': 'application/json'},
@@ -218,7 +236,10 @@ class ApiClient {
     return data['data'] as Map<String, dynamic>;
   }
 
-  Future<Map<String, dynamic>> put(String path, Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> put(
+    String path,
+    Map<String, dynamic> body,
+  ) async {
     final response = await http.put(
       Uri.parse('$baseUrl/$path'),
       headers: {..._headers, 'Content-Type': 'application/json'},
@@ -235,7 +256,11 @@ class ApiClient {
   Map<String, dynamic> _decode(http.Response response) {
     final data = jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode >= 400) {
-      throw ApiException(data['error'] as String? ?? 'Request failed');
+      throw ApiException(
+        data['message'] as String? ??
+            data['error'] as String? ??
+            'Request failed',
+      );
     }
     return data;
   }
@@ -258,8 +283,331 @@ UserRole roleFromString(String value) {
   };
 }
 
-void showFeatureMessage(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+bool boolFromApi(Object? value) {
+  if (value is bool) {
+    return value;
+  }
+  if (value is num) {
+    return value != 0;
+  }
+  return value == '1' || value == 'true';
+}
+
+Future<void> copyPrescriptionReport(
+  BuildContext context,
+  Prescription prescription,
+) async {
+  final report = [
+    'PharmaCare Prescription',
+    prescription.id,
+    'Date: ${prescription.date.isEmpty ? 'Not set' : prescription.date}',
+    'Medication: ${prescription.medication}',
+    'Diagnosis: ${prescription.diagnosis}',
+    'Pharmacist: ${prescription.pharmacist}',
+    'Status: ${prescription.status}',
+  ].join('\n');
+  await Clipboard.setData(ClipboardData(text: report));
+  if (context.mounted) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Prescription copied.')));
+  }
+}
+
+String formatDateInput(DateTime date) {
+  String twoDigits(int value) => value.toString().padLeft(2, '0');
+  return '${date.year}-${twoDigits(date.month)}-${twoDigits(date.day)}';
+}
+
+DateTime? parseDateInput(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) {
+    return null;
+  }
+  return DateTime.tryParse(trimmed);
+}
+
+class DateInputField extends StatelessWidget {
+  const DateInputField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+    required this.firstDate,
+    required this.lastDate,
+    this.initialDate,
+    super.key,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final DateTime firstDate;
+  final DateTime lastDate;
+  final DateTime? initialDate;
+
+  @override
+  Widget build(BuildContext context) {
+    Future<void> pickDate() async {
+      final parsed = parseDateInput(controller.text);
+      final now = DateTime.now();
+      final fallback = initialDate ?? now;
+      DateTime clampDate(DateTime value) {
+        if (value.isBefore(firstDate)) {
+          return firstDate;
+        }
+        if (value.isAfter(lastDate)) {
+          return lastDate;
+        }
+        return value;
+      }
+
+      final safeInitial = clampDate(parsed ?? fallback);
+      final picked = await showDatePicker(
+        context: context,
+        initialDate: safeInitial,
+        firstDate: firstDate,
+        lastDate: lastDate,
+      );
+      if (picked != null) {
+        controller.text = formatDateInput(picked);
+      }
+    }
+
+    return TextField(
+      controller: controller,
+      readOnly: true,
+      onTap: pickDate,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: 'YYYY-MM-DD',
+        prefixIcon: Icon(icon),
+        suffixIcon: IconButton(
+          tooltip: 'Select date',
+          onPressed: pickDate,
+          icon: const Icon(Icons.calendar_month_outlined),
+        ),
+      ),
+    );
+  }
+}
+
+Widget responsiveFieldPair(BuildContext context, Widget first, Widget second) {
+  if (MediaQuery.sizeOf(context).width < 420) {
+    return Column(children: [first, const SizedBox(height: 10), second]);
+  }
+  return Row(
+    children: [
+      Expanded(child: first),
+      const SizedBox(width: 10),
+      Expanded(child: second),
+    ],
+  );
+}
+
+Future<bool> showPatientEditor({
+  required BuildContext context,
+  required ApiClient api,
+  Patient? patient,
+}) async {
+  final firstName = TextEditingController(text: patient?.firstName ?? '');
+  final lastName = TextEditingController(text: patient?.lastName ?? '');
+  final birthDate = TextEditingController(
+    text: patient?.birthDate == 'Not set' ? '' : patient?.birthDate ?? '',
+  );
+  final gender = TextEditingController(text: patient?.gender ?? '');
+  final address = TextEditingController(text: patient?.address ?? '');
+  final contact = TextEditingController(
+    text: patient?.contact == 'No contact' ? '' : patient?.contact ?? '',
+  );
+  final email = TextEditingController(text: patient?.email ?? '');
+  final allergy = TextEditingController(
+    text: patient?.allergy == 'No known allergy' ? '' : patient?.allergy ?? '',
+  );
+  final history = TextEditingController(
+    text: patient?.history == 'No history' ? '' : patient?.history ?? '',
+  );
+  final navigator = Navigator.of(context);
+  bool saving = false;
+  String? error;
+
+  try {
+    final saved = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          Future<void> save() async {
+            if (firstName.text.trim().isEmpty || lastName.text.trim().isEmpty) {
+              setModalState(() {
+                error = 'First name and last name are required.';
+              });
+              return;
+            }
+            setModalState(() {
+              saving = true;
+              error = null;
+            });
+            final payload = {
+              'first_name': firstName.text.trim(),
+              'last_name': lastName.text.trim(),
+              'birth_date': birthDate.text.trim(),
+              'gender': gender.text.trim(),
+              'address': address.text.trim(),
+              'contact_number': contact.text.trim(),
+              'email': email.text.trim(),
+              'allergy_info': allergy.text.trim(),
+              'medical_history': history.text.trim(),
+            };
+            var shouldResetSaving = true;
+            try {
+              if (patient == null) {
+                await api.post('patients', payload);
+              } else {
+                await api.put('patients/${patient.id}', payload);
+              }
+              shouldResetSaving = false;
+              navigator.pop(true);
+            } catch (err) {
+              setModalState(() {
+                error = err.toString();
+              });
+            } finally {
+              if (shouldResetSaving) {
+                setModalState(() => saving = false);
+              }
+            }
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    patient == null ? 'Add Patient' : 'Edit Profile',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  responsiveFieldPair(
+                    context,
+                    TextField(
+                      controller: firstName,
+                      decoration: const InputDecoration(
+                        labelText: 'First name',
+                        prefixIcon: Icon(Icons.person_outline),
+                      ),
+                    ),
+                    TextField(
+                      controller: lastName,
+                      decoration: const InputDecoration(labelText: 'Last name'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  responsiveFieldPair(
+                    context,
+                    DateInputField(
+                      controller: birthDate,
+                      label: 'Birth date',
+                      icon: Icons.cake_outlined,
+                      firstDate: DateTime(1900),
+                      lastDate: DateTime.now(),
+                    ),
+                    TextField(
+                      controller: gender,
+                      decoration: const InputDecoration(labelText: 'Gender'),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: contact,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Contact number',
+                      prefixIcon: Icon(Icons.call_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(
+                      labelText: 'Email',
+                      prefixIcon: Icon(Icons.mail_outline),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: address,
+                    decoration: const InputDecoration(
+                      labelText: 'Address',
+                      prefixIcon: Icon(Icons.home_outlined),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: allergy,
+                    decoration: const InputDecoration(
+                      labelText: 'Allergy info',
+                      prefixIcon: Icon(Icons.warning_amber_rounded),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: history,
+                    minLines: 2,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      labelText: 'Medical history',
+                      prefixIcon: Icon(Icons.history),
+                    ),
+                  ),
+                  if (error != null) ...[
+                    const SizedBox(height: 10),
+                    StatusMessage(
+                      message: error!,
+                      color: const Color(0xFFD24D57),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: saving ? null : save,
+                    icon: saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save_outlined),
+                    label: Text(saving ? 'Saving' : 'Save'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    return saved ?? false;
+  } finally {
+    firstName.dispose();
+    lastName.dispose();
+    birthDate.dispose();
+    gender.dispose();
+    address.dispose();
+    contact.dispose();
+    email.dispose();
+    allergy.dispose();
+    history.dispose();
+  }
 }
 
 class AuthGate extends StatefulWidget {
@@ -298,6 +646,7 @@ class _AuthGateState extends State<AuthGate> {
       );
     }
     return PharmaCareShell(
+      session: session,
       role: session.user.role,
       api: api,
       onLogout: () => setState(() => _session = null),
@@ -397,18 +746,18 @@ class _LoginScreenState extends State<LoginScreen> {
                         Text(
                           'Welcome back!',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            color: const Color(0xFF13213A),
-                          ),
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(
+                                fontWeight: FontWeight.w900,
+                                color: const Color(0xFF13213A),
+                              ),
                         ),
                         const SizedBox(height: 4),
                         Text(
                           'Sign in to continue',
                           textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: const Color(0xFF66748A),
-                          ),
+                          style: Theme.of(context).textTheme.titleMedium
+                              ?.copyWith(color: const Color(0xFF66748A)),
                         ),
                         const SizedBox(height: 24),
                         TextField(
@@ -429,9 +778,12 @@ class _LoginScreenState extends State<LoginScreen> {
                             hintText: 'Enter your password',
                             prefixIcon: const Icon(Icons.lock_outline),
                             suffixIcon: IconButton(
-                              tooltip: _showPassword ? 'Hide password' : 'Show password',
-                              onPressed: () =>
-                                  setState(() => _showPassword = !_showPassword),
+                              tooltip: _showPassword
+                                  ? 'Hide password'
+                                  : 'Show password',
+                              onPressed: () => setState(
+                                () => _showPassword = !_showPassword,
+                              ),
                               icon: Icon(
                                 _showPassword
                                     ? Icons.visibility_off_outlined
@@ -443,7 +795,9 @@ class _LoginScreenState extends State<LoginScreen> {
                         Align(
                           alignment: Alignment.centerRight,
                           child: TextButton(
-                            onPressed: () => _showInfo('Password reset is not connected yet.'),
+                            onPressed: () => _showInfo(
+                              'Password reset is not connected yet.',
+                            ),
                             child: const Text('Forgot password?'),
                           ),
                         ),
@@ -594,9 +948,9 @@ class _LoginScreenState extends State<LoginScreen> {
           children: [
             Text(
               'Patient Registration',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 14),
             TextField(
@@ -627,7 +981,9 @@ class _LoginScreenState extends State<LoginScreen> {
             const SizedBox(height: 16),
             FilledButton(
               onPressed: _registering ? null : _registerPatient,
-              child: Text(_registering ? 'Creating Account' : 'Create Patient Account'),
+              child: Text(
+                _registering ? 'Creating Account' : 'Create Patient Account',
+              ),
             ),
           ],
         ),
@@ -665,7 +1021,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showInfo(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -763,15 +1121,25 @@ class PharmaCareMark extends StatelessWidget {
             ),
             borderRadius: BorderRadius.circular(20),
           ),
-          child: const Icon(Icons.local_pharmacy, color: Colors.white, size: 42),
+          child: const Icon(
+            Icons.local_pharmacy,
+            color: Colors.white,
+            size: 42,
+          ),
         ),
         const SizedBox(height: 12),
         RichText(
           text: const TextSpan(
             style: TextStyle(fontSize: 34, fontWeight: FontWeight.w900),
             children: [
-              TextSpan(text: 'Pharma', style: TextStyle(color: Color(0xFF1E5FD6))),
-              TextSpan(text: 'Care', style: TextStyle(color: Color(0xFF21A7B7))),
+              TextSpan(
+                text: 'Pharma',
+                style: TextStyle(color: Color(0xFF1E5FD6)),
+              ),
+              TextSpan(
+                text: 'Care',
+                style: TextStyle(color: Color(0xFF21A7B7)),
+              ),
             ],
           ),
         ),
@@ -808,12 +1176,14 @@ class DividerWithText extends StatelessWidget {
 
 class PharmaCareShell extends StatefulWidget {
   const PharmaCareShell({
+    required this.session,
     required this.role,
     required this.api,
     required this.onLogout,
     super.key,
   });
 
+  final BackendSession session;
   final UserRole role;
   final ApiClient api;
   final VoidCallback onLogout;
@@ -894,7 +1264,7 @@ class AdminDashboardScreen extends StatelessWidget {
       subtitle: 'Signed in as ${session.user.fullName}',
       actionIcon: Icons.security,
       children: [
-        const InventorySummary(),
+        AdminSummaryStrip(api: api),
         const SizedBox(height: 14),
         SectionHeader(title: 'Audit Logs'),
         const SizedBox(height: 8),
@@ -927,6 +1297,7 @@ class _PharmacistManagementScreenState
       title: 'Pharmacists',
       subtitle: 'Add, edit, disable, and view pharmacist accounts.',
       actionIcon: Icons.person_add_alt_1,
+      onAction: _showAddPharmacist,
       children: [
         FilledButton.icon(
           onPressed: _showAddPharmacist,
@@ -951,7 +1322,9 @@ class _PharmacistManagementScreenState
           backgroundColor: active
               ? const Color(0xFF07827D).withValues(alpha: .14)
               : const Color(0xFFD24D57).withValues(alpha: .14),
-          foregroundColor: active ? const Color(0xFF07827D) : const Color(0xFFD24D57),
+          foregroundColor: active
+              ? const Color(0xFF07827D)
+              : const Color(0xFFD24D57),
           child: const Icon(Icons.local_pharmacy_outlined),
         ),
         title: Text(
@@ -987,80 +1360,195 @@ class _PharmacistManagementScreenState
   }
 
   Future<void> _showPharmacistSheet({Map<String, dynamic>? item}) async {
-    final name = TextEditingController(text: item?['full_name'] as String? ?? '');
+    final name = TextEditingController(
+      text: item?['full_name'] as String? ?? '',
+    );
     final email = TextEditingController(text: item?['email'] as String? ?? '');
-    final license = TextEditingController(text: item?['license_number'] as String? ?? '');
-    final contact = TextEditingController(text: item?['contact_number'] as String? ?? '');
+    final license = TextEditingController(
+      text: item?['license_number'] as String? ?? '',
+    );
+    final contact = TextEditingController(
+      text: item?['contact_number'] as String? ?? '',
+    );
     final password = TextEditingController(text: 'password');
 
     final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    bool saving = false;
+    String? error;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          left: 20,
-          right: 20,
-          top: 20,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              item == null ? 'Add Pharmacist' : 'Edit Pharmacist',
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w900,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          Future<void> save() async {
+            setModalState(() {
+              saving = true;
+              error = null;
+            });
+            try {
+              final payload = {
+                'full_name': name.text.trim(),
+                'email': email.text.trim(),
+                'license_number': license.text.trim(),
+                'contact_number': contact.text.trim(),
+                if (item == null) 'password': password.text,
+              };
+              if (item == null) {
+                await widget.api.post('admin/pharmacists', payload);
+              } else {
+                await widget.api.put(
+                  'admin/pharmacists/${item['id']}',
+                  payload,
+                );
+              }
+              if (!mounted) {
+                return;
+              }
+              navigator.pop();
+              setState(() => _refresh++);
+              messenger.showSnackBar(
+                SnackBar(
+                  content: Text(
+                    item == null
+                        ? 'Pharmacist created.'
+                        : 'Pharmacist updated.',
+                  ),
+                ),
+              );
+            } catch (err) {
+              setModalState(() {
+                error = err.toString();
+              });
+            } finally {
+              setModalState(() => saving = false);
+            }
+          }
+
+          return Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    item == null ? 'Add Pharmacist' : 'Edit Pharmacist',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: 'Full name'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: 'Email'),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: license,
+                    decoration: const InputDecoration(
+                      labelText: 'License number',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: contact,
+                    keyboardType: TextInputType.phone,
+                    decoration: const InputDecoration(
+                      labelText: 'Contact number',
+                    ),
+                  ),
+                  if (item == null) ...[
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: password,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Temporary password',
+                      ),
+                    ),
+                  ],
+                  if (error != null) ...[
+                    const SizedBox(height: 10),
+                    StatusMessage(
+                      message: error!,
+                      color: const Color(0xFFD24D57),
+                    ),
+                  ],
+                  const SizedBox(height: 16),
+                  FilledButton.icon(
+                    onPressed: saving ? null : save,
+                    icon: saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save_outlined),
+                    label: Text(
+                      saving
+                          ? 'Saving'
+                          : item == null
+                          ? 'Create Pharmacist'
+                          : 'Save Changes',
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 14),
-            TextField(controller: name, decoration: const InputDecoration(labelText: 'Full name')),
-            const SizedBox(height: 10),
-            TextField(controller: email, decoration: const InputDecoration(labelText: 'Email')),
-            const SizedBox(height: 10),
-            TextField(controller: license, decoration: const InputDecoration(labelText: 'License number')),
-            const SizedBox(height: 10),
-            TextField(controller: contact, decoration: const InputDecoration(labelText: 'Contact number')),
-            if (item == null) ...[
-              const SizedBox(height: 10),
-              TextField(
-                controller: password,
-                obscureText: true,
-                decoration: const InputDecoration(labelText: 'Temporary password'),
-              ),
-            ],
-            const SizedBox(height: 16),
-            FilledButton(
-              onPressed: () async {
-                final payload = {
-                  'full_name': name.text.trim(),
-                  'email': email.text.trim(),
-                  'license_number': license.text.trim(),
-                  'contact_number': contact.text.trim(),
-                  if (item == null) 'password': password.text,
-                };
-                if (item == null) {
-                  await widget.api.post('admin/pharmacists', payload);
-                } else {
-                  await widget.api.put('admin/pharmacists/${item['id']}', payload);
-                }
-                if (mounted) {
-                  navigator.pop();
-                  setState(() => _refresh++);
-                }
-              },
-              child: Text(item == null ? 'Create Pharmacist' : 'Save Changes'),
-            ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
 
   Future<void> _disablePharmacist(Map<String, dynamic> item) async {
-    await widget.api.put('admin/pharmacists/${item['id']}/disable', {});
-    setState(() => _refresh++);
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Disable pharmacist?'),
+        content: Text(
+          '${item['full_name'] as String? ?? 'This pharmacist'} will no longer be able to sign in.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Disable'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    try {
+      await widget.api.put('admin/pharmacists/${item['id']}/disable', {});
+      if (!mounted) {
+        return;
+      }
+      setState(() => _refresh++);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Pharmacist disabled.')),
+      );
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
   }
 }
 
@@ -1068,7 +1556,7 @@ class _PharmaCareShellState extends State<PharmaCareShell> {
   int _selectedIndex = 0;
 
   late final List<Widget> _screens = [
-    DashboardScreen(api: widget.api),
+    DashboardScreen(api: widget.api, session: widget.session),
     PatientsScreen(api: widget.api),
     PrescriptionsScreen(api: widget.api),
     InventoryScreen(api: widget.api),
@@ -1195,7 +1683,11 @@ class _PatientPortalShellState extends State<PatientPortalShell> {
 }
 
 class PatientHomeScreen extends StatefulWidget {
-  const PatientHomeScreen({required this.api, required this.session, super.key});
+  const PatientHomeScreen({
+    required this.api,
+    required this.session,
+    super.key,
+  });
 
   final ApiClient api;
   final BackendSession session;
@@ -1206,6 +1698,7 @@ class PatientHomeScreen extends StatefulWidget {
 
 class _PatientHomeScreenState extends State<PatientHomeScreen> {
   int _notificationRefresh = 0;
+  int _summaryRefresh = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -1217,8 +1710,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
             subtitle: 'Your prescriptions, refill requests, and reminders.',
             trailing: IconButton.filledTonal(
               tooltip: 'Notifications',
-              onPressed: () =>
-                  showFeatureMessage(context, 'Scroll down to view reminders.'),
+              onPressed: _markAllNotificationsRead,
               icon: const Icon(Icons.notifications_outlined),
             ),
           ),
@@ -1227,14 +1719,24 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
           sliver: SliverList.list(
             children: [
-              const PatientSummaryStrip(),
+              PatientSummaryStrip(
+                api: widget.api,
+                key: ValueKey(_summaryRefresh),
+              ),
               const SizedBox(height: 16),
               SectionHeader(title: 'Active Prescriptions'),
               const SizedBox(height: 8),
               ApiList(
                 loader: () => widget.api.list('prescriptions'),
-                itemBuilder: (item) =>
-                    PatientPrescriptionCard(prescriptionFromApi(item)),
+                itemBuilder: (item) {
+                  final prescription = prescriptionFromApi(item);
+                  return PatientPrescriptionCard(
+                    prescription,
+                    onRequestRefill: () => _requestRefill(prescription),
+                    onExport: () =>
+                        copyPrescriptionReport(context, prescription),
+                  );
+                },
               ),
               const SizedBox(height: 16),
               SectionHeader(title: 'Reminders'),
@@ -1267,6 +1769,7 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
         return;
       }
       setState(() => _notificationRefresh++);
+      setState(() => _summaryRefresh++);
       messenger.showSnackBar(
         const SnackBar(content: Text('Notification marked as read.')),
       );
@@ -1274,12 +1777,75 @@ class _PatientHomeScreenState extends State<PatientHomeScreen> {
       messenger.showSnackBar(SnackBar(content: Text(err.toString())));
     }
   }
+
+  Future<void> _markAllNotificationsRead() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final notifications = (await widget.api.list('notifications'))
+          .map(notificationFromApi)
+          .where((notification) => !notification.isRead)
+          .toList();
+      if (notifications.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No unread reminders.')),
+        );
+        return;
+      }
+      for (final notification in notifications) {
+        await widget.api.put('notifications/${notification.id}/read', {});
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _notificationRefresh++;
+        _summaryRefresh++;
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('${notifications.length} reminder(s) marked read.'),
+        ),
+      );
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
+  }
+
+  Future<void> _requestRefill(Prescription prescription) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.api.post('refill-requests', {
+        'prescription_id': prescription.rxId,
+        'notes': 'Requested from prescription card.',
+      });
+      if (!mounted) {
+        return;
+      }
+      setState(() => _summaryRefresh++);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Refill requested for ${prescription.medication}.'),
+        ),
+      );
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
+  }
 }
 
-class PatientPrescriptionsScreen extends StatelessWidget {
+class PatientPrescriptionsScreen extends StatefulWidget {
   const PatientPrescriptionsScreen({required this.api, super.key});
 
   final ApiClient api;
+
+  @override
+  State<PatientPrescriptionsScreen> createState() =>
+      _PatientPrescriptionsScreenState();
+}
+
+class _PatientPrescriptionsScreenState
+    extends State<PatientPrescriptionsScreen> {
+  String _filter = 'Active';
 
   @override
   Widget build(BuildContext context) {
@@ -1287,16 +1853,93 @@ class PatientPrescriptionsScreen extends StatelessWidget {
       title: 'My Prescriptions',
       subtitle: 'View medicines, diagnosis, dosage, and status.',
       actionIcon: Icons.download_outlined,
+      onAction: _exportPrescriptions,
       children: [
-        const SegmentedFilter(labels: ['Active', 'History', 'Dispensed']),
+        SegmentedFilter(
+          labels: const ['Active', 'History', 'Dispensed'],
+          onChanged: (value) => setState(() => _filter = value),
+        ),
         const SizedBox(height: 14),
         ApiList(
-          loader: () => api.list('prescriptions'),
-          itemBuilder: (item) =>
-              PatientPrescriptionCard(prescriptionFromApi(item)),
+          loader: () => widget.api.list('prescriptions'),
+          filter: (item) =>
+              _matchesPrescriptionFilter(prescriptionFromApi(item)),
+          itemBuilder: (item) {
+            final prescription = prescriptionFromApi(item);
+            return PatientPrescriptionCard(
+              prescription,
+              onRequestRefill: () => _requestRefill(prescription),
+              onExport: () => copyPrescriptionReport(context, prescription),
+            );
+          },
         ),
       ],
     );
+  }
+
+  bool _matchesPrescriptionFilter(Prescription prescription) {
+    if (_filter == 'Dispensed') {
+      return prescription.status == 'Dispensed';
+    }
+    if (_filter == 'History') {
+      return prescription.status != 'Pending' &&
+          prescription.status != 'Active' &&
+          prescription.status != 'Dispensed';
+    }
+    return prescription.status == 'Pending' || prescription.status == 'Active';
+  }
+
+  Future<void> _exportPrescriptions() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final prescriptions = (await widget.api.list(
+        'prescriptions',
+      )).map(prescriptionFromApi).where(_matchesPrescriptionFilter).toList();
+      if (prescriptions.isEmpty) {
+        messenger.showSnackBar(
+          SnackBar(content: Text('No $_filter prescriptions to export.')),
+        );
+        return;
+      }
+      final report = [
+        'PharmaCare Prescription Report',
+        'Filter: $_filter',
+        'Generated: ${DateTime.now()}',
+        '',
+        for (final prescription in prescriptions)
+          [
+            prescription.id,
+            'Date: ${prescription.date.isEmpty ? 'Not set' : prescription.date}',
+            'Medication: ${prescription.medication}',
+            'Diagnosis: ${prescription.diagnosis}',
+            'Pharmacist: ${prescription.pharmacist}',
+            'Status: ${prescription.status}',
+          ].join('\n'),
+      ].join('\n\n');
+      await Clipboard.setData(ClipboardData(text: report));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Prescription report copied.')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+  }
+
+  Future<void> _requestRefill(Prescription prescription) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await widget.api.post('refill-requests', {
+        'prescription_id': prescription.rxId,
+        'notes': 'Requested from prescriptions page.',
+      });
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Refill requested for ${prescription.medication}.'),
+        ),
+      );
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text(error.toString())));
+    }
   }
 }
 
@@ -1348,11 +1991,32 @@ class _PatientRefillsScreenState extends State<PatientRefillsScreen> {
   }
 }
 
-class PatientAccountScreen extends StatelessWidget {
-  const PatientAccountScreen({required this.api, required this.onLogout, super.key});
+class PatientAccountScreen extends StatefulWidget {
+  const PatientAccountScreen({
+    required this.api,
+    required this.onLogout,
+    super.key,
+  });
 
   final ApiClient api;
   final VoidCallback onLogout;
+
+  @override
+  State<PatientAccountScreen> createState() => _PatientAccountScreenState();
+}
+
+class _PatientAccountScreenState extends State<PatientAccountScreen> {
+  int _refresh = 0;
+  bool _medicationReminders = true;
+  bool _refillUpdates = true;
+  bool _safetyAlerts = true;
+  bool _preferencesLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPreferences();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1360,47 +2024,165 @@ class PatientAccountScreen extends StatelessWidget {
       title: 'My Account',
       subtitle: 'Profile, allergies, history, and notification settings.',
       actionIcon: Icons.edit_outlined,
+      onAction: _editFirstProfile,
       children: [
         ApiList(
-          loader: () => api.list('patients'),
-          itemBuilder: (item) => PatientCard(patientFromApi(item)),
+          key: ValueKey(_refresh),
+          loader: () => widget.api.list('patients'),
+          itemBuilder: (item) {
+            final patient = patientFromApi(item);
+            return PatientCard(patient, onEdit: () => _editProfile(patient));
+          },
         ),
         const SizedBox(height: 4),
         SectionHeader(title: 'Notification Preferences'),
         const SizedBox(height: 8),
-        const PreferenceTile(
+        PreferenceTile(
           icon: Icons.medication_outlined,
           title: 'Medication reminders',
           subtitle: 'Daily reminders for active prescriptions.',
-          enabled: true,
+          enabled: _medicationReminders,
+          busy: _preferencesLoading,
+          onChanged: (value) => _updatePreference(
+            title: 'Medication reminders',
+            value: value,
+            update: () => _medicationReminders = value,
+          ),
         ),
-        const PreferenceTile(
+        PreferenceTile(
           icon: Icons.sync_outlined,
           title: 'Refill updates',
           subtitle: 'Get notified when refills are approved.',
-          enabled: true,
+          enabled: _refillUpdates,
+          busy: _preferencesLoading,
+          onChanged: (value) => _updatePreference(
+            title: 'Refill updates',
+            value: value,
+            update: () => _refillUpdates = value,
+          ),
         ),
-        const PreferenceTile(
+        PreferenceTile(
           icon: Icons.warning_amber_rounded,
           title: 'Safety alerts',
           subtitle: 'Receive allergy and interaction warnings.',
-          enabled: true,
+          enabled: _safetyAlerts,
+          busy: _preferencesLoading,
+          onChanged: (value) => _updatePreference(
+            title: 'Safety alerts',
+            value: value,
+            update: () => _safetyAlerts = value,
+          ),
         ),
         const SizedBox(height: 8),
         OutlinedButton.icon(
-          onPressed: onLogout,
+          onPressed: widget.onLogout,
           icon: const Icon(Icons.logout),
           label: const Text('Logout'),
         ),
       ],
     );
   }
+
+  Future<void> _editProfile(Patient patient) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final saved = await showPatientEditor(
+        context: context,
+        api: widget.api,
+        patient: patient,
+      );
+      if (!mounted || !saved) {
+        return;
+      }
+      setState(() => _refresh++);
+      messenger.showSnackBar(const SnackBar(content: Text('Profile updated.')));
+    } catch (err) {
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
+  }
+
+  Future<void> _editFirstProfile() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final patients = await widget.api.list('patients');
+      if (patients.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No patient profile found.')),
+        );
+        return;
+      }
+      await _editProfile(patientFromApi(patients.first));
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
+  }
+
+  Future<void> _loadPreferences() async {
+    try {
+      final prefs = await widget.api.get('notification-preferences');
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _medicationReminders = boolFromApi(prefs['medication_reminders']);
+        _refillUpdates = boolFromApi(prefs['refill_updates']);
+        _safetyAlerts = boolFromApi(prefs['safety_alerts']);
+        _preferencesLoading = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _preferencesLoading = false);
+      }
+    }
+  }
+
+  Future<void> _updatePreference({
+    required String title,
+    required bool value,
+    required VoidCallback update,
+  }) async {
+    final previous = {
+      'medication_reminders': _medicationReminders,
+      'refill_updates': _refillUpdates,
+      'safety_alerts': _safetyAlerts,
+    };
+    setState(update);
+    try {
+      await widget.api.put('notification-preferences', {
+        'medication_reminders': _medicationReminders,
+        'refill_updates': _refillUpdates,
+        'safety_alerts': _safetyAlerts,
+      });
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$title ${value ? 'enabled' : 'disabled'}.')),
+      );
+    } catch (err) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _medicationReminders = previous['medication_reminders']!;
+        _refillUpdates = previous['refill_updates']!;
+        _safetyAlerts = previous['safety_alerts']!;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(err.toString())));
+    }
+  }
 }
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({required this.api, super.key});
+  const DashboardScreen({required this.api, required this.session, super.key});
 
   final ApiClient api;
+  final BackendSession session;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -1416,41 +2198,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
       slivers: [
         SliverToBoxAdapter(
           child: AppHeader(
-            title: 'Welcome back, Maria',
+            title:
+                'Welcome back, ${widget.session.user.fullName.split(' ').first}',
             subtitle: 'Centralized pharmaceutical care for today.',
-            trailing: IconButton.filledTonal(
-              tooltip: 'Search',
-              onPressed: () =>
-                  showFeatureMessage(context, 'Use the search fields inside each module.'),
-              icon: const Icon(Icons.search),
-            ),
           ),
         ),
         SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
           sliver: SliverList.list(
             children: [
-              const StatCarousel(),
+              StaffStatCarousel(api: widget.api),
               const SizedBox(height: 16),
-              const PrescriptionChartCard(),
+              PrescriptionChartCard(api: widget.api),
               const SizedBox(height: 16),
-              const CareBanner(),
+              CareBanner(api: widget.api),
               const SizedBox(height: 16),
-              SectionHeader(title: 'Recent Prescriptions', action: 'View all'),
+              SectionHeader(title: 'Recent Prescriptions'),
               const SizedBox(height: 8),
               ApiList(
                 loader: () => widget.api.list('prescriptions'),
-                itemBuilder: (item) => PrescriptionTile(prescriptionFromApi(item)),
+                itemBuilder: (item) =>
+                    PrescriptionTile(prescriptionFromApi(item)),
               ),
               const SizedBox(height: 16),
-              SectionHeader(title: 'Medication Stock', action: 'Inventory'),
+              SectionHeader(title: 'Medication Stock'),
               const SizedBox(height: 8),
               ApiList(
                 loader: () => widget.api.list('medications'),
-                itemBuilder: (item) => MedicationStockTile(medicationFromApi(item)),
+                itemBuilder: (item) =>
+                    MedicationStockTile(medicationFromApi(item)),
               ),
               const SizedBox(height: 16),
-              SectionHeader(title: 'Pending Refills', action: 'Review'),
+              SectionHeader(title: 'Pending Refills'),
               const SizedBox(height: 8),
               SearchField(
                 hint: 'Search refill requests',
@@ -1483,7 +2262,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 16),
               SectionHeader(title: 'Quick Actions'),
               const SizedBox(height: 8),
-              const QuickActionsGrid(),
+              QuickActionsGrid(api: widget.api),
             ],
           ),
         ),
@@ -1500,13 +2279,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return;
       }
       setState(() => _refillRefresh++);
-      messenger.showSnackBar(
-        SnackBar(content: Text('Refill request $label.')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('Refill request $label.')));
     } catch (err) {
-      messenger.showSnackBar(
-        SnackBar(content: Text(err.toString())),
-      );
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
     }
   }
 }
@@ -1561,201 +2336,19 @@ class _PatientsScreenState extends State<PatientsScreen> {
   }
 
   Future<void> _showPatientForm({Patient? patient}) async {
-    final firstName = TextEditingController(text: patient?.firstName ?? '');
-    final lastName = TextEditingController(text: patient?.lastName ?? '');
-    final birthDate = TextEditingController(text: patient?.birthDate == 'Not set' ? '' : patient?.birthDate ?? '');
-    final gender = TextEditingController(text: patient?.gender ?? '');
-    final address = TextEditingController(text: patient?.address ?? '');
-    final contact = TextEditingController(text: patient?.contact == 'No contact' ? '' : patient?.contact ?? '');
-    final email = TextEditingController(text: patient?.email ?? '');
-    final allergy = TextEditingController(text: patient?.allergy == 'No known allergy' ? '' : patient?.allergy ?? '');
-    final history = TextEditingController(text: patient?.history == 'No history' ? '' : patient?.history ?? '');
-    final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
-    bool saving = false;
-    String? error;
-
-    await showModalBottomSheet<void>(
+    final saved = await showPatientEditor(
       context: context,
-      isScrollControlled: true,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setModalState) {
-          Future<void> save() async {
-            if (firstName.text.trim().isEmpty || lastName.text.trim().isEmpty) {
-              setModalState(() {
-                error = 'First name and last name are required.';
-              });
-              return;
-            }
-            setModalState(() {
-              saving = true;
-              error = null;
-            });
-            final payload = {
-              'first_name': firstName.text.trim(),
-              'last_name': lastName.text.trim(),
-              'birth_date': birthDate.text.trim(),
-              'gender': gender.text.trim(),
-              'address': address.text.trim(),
-              'contact_number': contact.text.trim(),
-              'email': email.text.trim(),
-              'allergy_info': allergy.text.trim(),
-              'medical_history': history.text.trim(),
-            };
-            try {
-              if (patient == null) {
-                await widget.api.post('patients', payload);
-              } else {
-                await widget.api.put('patients/${patient.id}', payload);
-              }
-              if (!mounted) {
-                return;
-              }
-              navigator.pop();
-              setState(() => _refresh++);
-              messenger.showSnackBar(
-                SnackBar(
-                  content: Text(
-                    patient == null ? 'Patient added.' : 'Patient updated.',
-                  ),
-                ),
-              );
-            } catch (err) {
-              setModalState(() {
-                error = err.toString();
-              });
-            } finally {
-              setModalState(() => saving = false);
-            }
-          }
-
-          return Padding(
-            padding: EdgeInsets.only(
-              left: 20,
-              right: 20,
-              top: 20,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    patient == null ? 'Add Patient' : 'Edit Patient',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: firstName,
-                          decoration: const InputDecoration(
-                            labelText: 'First name',
-                            prefixIcon: Icon(Icons.person_outline),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: lastName,
-                          decoration: const InputDecoration(labelText: 'Last name'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: birthDate,
-                          keyboardType: TextInputType.datetime,
-                          decoration: const InputDecoration(
-                            labelText: 'Birth date',
-                            hintText: 'YYYY-MM-DD',
-                            prefixIcon: Icon(Icons.cake_outlined),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: TextField(
-                          controller: gender,
-                          decoration: const InputDecoration(labelText: 'Gender'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: contact,
-                    keyboardType: TextInputType.phone,
-                    decoration: const InputDecoration(
-                      labelText: 'Contact number',
-                      prefixIcon: Icon(Icons.call_outlined),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: email,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(
-                      labelText: 'Email',
-                      prefixIcon: Icon(Icons.mail_outline),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: address,
-                    decoration: const InputDecoration(
-                      labelText: 'Address',
-                      prefixIcon: Icon(Icons.home_outlined),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: allergy,
-                    decoration: const InputDecoration(
-                      labelText: 'Allergy info',
-                      prefixIcon: Icon(Icons.warning_amber_rounded),
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  TextField(
-                    controller: history,
-                    minLines: 2,
-                    maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Medical history',
-                      prefixIcon: Icon(Icons.history),
-                    ),
-                  ),
-                  if (error != null) ...[
-                    const SizedBox(height: 10),
-                    StatusMessage(message: error!, color: const Color(0xFFD24D57)),
-                  ],
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: saving ? null : save,
-                    icon: saving
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.save_outlined),
-                    label: Text(saving ? 'Saving' : 'Save Patient'),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+      api: widget.api,
+      patient: patient,
+    );
+    if (!mounted || !saved) {
+      return;
+    }
+    setState(() => _refresh++);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(patient == null ? 'Patient added.' : 'Patient updated.'),
       ),
     );
   }
@@ -1866,9 +2459,12 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
 
           final patients = snapshot.data?[0] ?? [];
           final medications = snapshot.data?[1] ?? [];
-          patientId ??= patients.isNotEmpty ? intFrom(patients.first, 'patient_id') : null;
-          medicationId ??=
-              medications.isNotEmpty ? intFrom(medications.first, 'medication_id') : null;
+          patientId ??= patients.isNotEmpty
+              ? intFrom(patients.first, 'patient_id')
+              : null;
+          medicationId ??= medications.isNotEmpty
+              ? intFrom(medications.first, 'medication_id')
+              : null;
 
           return StatefulBuilder(
             builder: (context, setModalState) {
@@ -1891,14 +2487,18 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
                     'status': 'Pending',
                     'notes': notes.text.trim(),
                   });
-                  final prescriptionId = intFrom(prescription, 'prescription_id');
-                  await widget.api.post('prescriptions/$prescriptionId/details', {
-                    'medication_id': medicationId,
-                    'dosage': dosage.text.trim(),
-                    'frequency': frequency.text.trim(),
-                    'duration': duration.text.trim(),
-                    'quantity': int.tryParse(quantity.text.trim()) ?? 1,
-                  });
+                  final prescriptionId = intFrom(
+                    prescription,
+                    'prescription_id',
+                  );
+                  await widget.api
+                      .post('prescriptions/$prescriptionId/details', {
+                        'medication_id': medicationId,
+                        'dosage': dosage.text.trim(),
+                        'frequency': frequency.text.trim(),
+                        'duration': duration.text.trim(),
+                        'quantity': int.tryParse(quantity.text.trim()) ?? 1,
+                      });
                   if (!mounted) {
                     return;
                   }
@@ -1948,7 +2548,8 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
                               child: Text(patientName(patient)),
                             ),
                         ],
-                        onChanged: (value) => setModalState(() => patientId = value),
+                        onChanged: (value) =>
+                            setModalState(() => patientId = value),
                       ),
                       const SizedBox(height: 10),
                       DropdownButtonFormField<int>(
@@ -1962,7 +2563,8 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
                             DropdownMenuItem(
                               value: intFrom(medication, 'medication_id'),
                               child: Text(
-                                medication['medication_name'] as String? ?? 'Medication',
+                                medication['medication_name'] as String? ??
+                                    'Medication',
                               ),
                             ),
                         ],
@@ -2050,7 +2652,9 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Icon(Icons.save_outlined),
                         label: Text(saving ? 'Saving' : 'Save Prescription'),
@@ -2084,9 +2688,10 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
               error = null;
             });
             try {
-              await widget.api.post('prescriptions/${prescription.rxId}/dispense', {
-                'remarks': remarks.text.trim(),
-              });
+              await widget.api.post(
+                'prescriptions/${prescription.rxId}/dispense',
+                {'remarks': remarks.text.trim()},
+              );
               if (!mounted) {
                 return;
               }
@@ -2117,16 +2722,16 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
               children: [
                 Text(
                   'Dispense Prescription',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   prescription.id,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w800),
                 ),
                 Text(
                   '${prescription.patient} • ${prescription.medication}',
@@ -2145,7 +2750,10 @@ class _PrescriptionsScreenState extends State<PrescriptionsScreen> {
                 ),
                 if (error != null) ...[
                   const SizedBox(height: 10),
-                  StatusMessage(message: error!, color: const Color(0xFFD24D57)),
+                  StatusMessage(
+                    message: error!,
+                    color: const Color(0xFFD24D57),
+                  ),
                 ],
                 const SizedBox(height: 16),
                 FilledButton.icon(
@@ -2325,14 +2933,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  TextField(
+                  DateInputField(
                     controller: expirationDate,
-                    keyboardType: TextInputType.datetime,
-                    decoration: const InputDecoration(
-                      labelText: 'Expiration date',
-                      hintText: 'YYYY-MM-DD',
-                      prefixIcon: Icon(Icons.event_outlined),
-                    ),
+                    label: 'Expiration date',
+                    icon: Icons.event_outlined,
+                    firstDate: DateTime.now(),
+                    lastDate: DateTime(2100),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -2372,7 +2978,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ),
                   if (error != null) ...[
                     const SizedBox(height: 10),
-                    StatusMessage(message: error!, color: const Color(0xFFD24D57)),
+                    StatusMessage(
+                      message: error!,
+                      color: const Color(0xFFD24D57),
+                    ),
                   ],
                   const SizedBox(height: 16),
                   FilledButton.icon(
@@ -2455,16 +3064,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
               children: [
                 Text(
                   'Stock In',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 8),
                 Text(
                   medication.name,
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w700),
                 ),
                 Text(
                   'Current stock: ${medication.stock}',
@@ -2482,7 +3091,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
                 if (error != null) ...[
                   const SizedBox(height: 10),
-                  StatusMessage(message: error!, color: const Color(0xFFD24D57)),
+                  StatusMessage(
+                    message: error!,
+                    color: const Color(0xFFD24D57),
+                  ),
                 ],
                 const SizedBox(height: 16),
                 FilledButton.icon(
@@ -2510,9 +3122,13 @@ class _InventoryScreenState extends State<InventoryScreen> {
     final dosageForm = TextEditingController(text: medication.dosageForm);
     final strength = TextEditingController(text: medication.strength);
     final manufacturer = TextEditingController(text: medication.manufacturer);
-    final expirationDate = TextEditingController(text: medication.expiry == 'No expiry' ? '' : medication.expiry);
+    final expirationDate = TextEditingController(
+      text: medication.expiry == 'No expiry' ? '' : medication.expiry,
+    );
     final stockQuantity = TextEditingController(text: '${medication.stock}');
-    final reorderLevel = TextEditingController(text: '${medication.reorderLevel}');
+    final reorderLevel = TextEditingController(
+      text: '${medication.reorderLevel}',
+    );
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
     bool saving = false;
@@ -2588,14 +3204,18 @@ class _InventoryScreenState extends State<InventoryScreen> {
                       Expanded(
                         child: TextField(
                           controller: dosageForm,
-                          decoration: const InputDecoration(labelText: 'Dosage form'),
+                          decoration: const InputDecoration(
+                            labelText: 'Dosage form',
+                          ),
                         ),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
                         child: TextField(
                           controller: strength,
-                          decoration: const InputDecoration(labelText: 'Strength'),
+                          decoration: const InputDecoration(
+                            labelText: 'Strength',
+                          ),
                         ),
                       ),
                     ],
@@ -2609,14 +3229,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     ),
                   ),
                   const SizedBox(height: 10),
-                  TextField(
+                  DateInputField(
                     controller: expirationDate,
-                    keyboardType: TextInputType.datetime,
-                    decoration: const InputDecoration(
-                      labelText: 'Expiration date',
-                      hintText: 'YYYY-MM-DD',
-                      prefixIcon: Icon(Icons.event_outlined),
-                    ),
+                    label: 'Expiration date',
+                    icon: Icons.event_outlined,
+                    firstDate: DateTime.now(),
+                    lastDate: DateTime(2100),
                   ),
                   const SizedBox(height: 10),
                   Row(
@@ -2633,7 +3251,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         child: TextField(
                           controller: reorderLevel,
                           keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(labelText: 'Reorder'),
+                          decoration: const InputDecoration(
+                            labelText: 'Reorder',
+                          ),
                         ),
                       ),
                     ],
@@ -2650,7 +3270,10 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ),
                   if (error != null) ...[
                     const SizedBox(height: 10),
-                    StatusMessage(message: error!, color: const Color(0xFFD24D57)),
+                    StatusMessage(
+                      message: error!,
+                      color: const Color(0xFFD24D57),
+                    ),
                   ],
                   const SizedBox(height: 16),
                   FilledButton.icon(
@@ -2794,15 +3417,13 @@ class ListPage extends StatelessWidget {
           child: AppHeader(
             title: title,
             subtitle: subtitle,
-            trailing: IconButton.filledTonal(
-              tooltip: title,
-              onPressed: onAction ??
-                  () => showFeatureMessage(
-                    context,
-                    '$title action is ready for backend form integration.',
+            trailing: onAction == null
+                ? null
+                : IconButton.filledTonal(
+                    tooltip: title,
+                    onPressed: onAction,
+                    icon: Icon(actionIcon),
                   ),
-              icon: Icon(actionIcon),
-            ),
           ),
         ),
         SliverPadding(
@@ -2818,19 +3439,80 @@ class ListPage extends StatelessWidget {
   }
 }
 
-class StatCarousel extends StatelessWidget {
-  const StatCarousel({super.key});
+class StaffStatCarousel extends StatelessWidget {
+  const StaffStatCarousel({required this.api, super.key});
+
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 118,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: dashboardStats.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
-        itemBuilder: (context, index) => StatCard(dashboardStats[index]),
-      ),
+    return FutureBuilder<List<List<Map<String, dynamic>>>>(
+      future: Future.wait([
+        api.list('patients'),
+        api.list('prescriptions'),
+        api.list('refill-requests'),
+        api.list('medications'),
+      ]),
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+        final patients = data?[0] ?? [];
+        final prescriptions = data?[1] ?? [];
+        final refills = data?[2] ?? [];
+        final medications = data?[3] ?? [];
+        final today = formatDateInput(DateTime.now());
+        final todayRx = prescriptions
+            .where(
+              (item) => (item['prescription_date'] as String? ?? '') == today,
+            )
+            .length;
+        final pendingRefills = refills
+            .where((item) => (item['status'] as String? ?? '') == 'Pending')
+            .length;
+        final stats = [
+          DashboardStat(
+            'Total Patients',
+            snapshot.connectionState == ConnectionState.done
+                ? '${patients.length}'
+                : '...',
+            Icons.groups_2_outlined,
+            const Color(0xFF07827D),
+          ),
+          DashboardStat(
+            'Today Rx',
+            snapshot.connectionState == ConnectionState.done
+                ? '$todayRx'
+                : '...',
+            Icons.receipt_long_outlined,
+            const Color(0xFF2476D2),
+          ),
+          DashboardStat(
+            'Refill Requests',
+            snapshot.connectionState == ConnectionState.done
+                ? '$pendingRefills'
+                : '...',
+            Icons.sync,
+            const Color(0xFFE5A923),
+          ),
+          DashboardStat(
+            'Medications',
+            snapshot.connectionState == ConnectionState.done
+                ? '${medications.length}'
+                : '...',
+            Icons.medication_outlined,
+            const Color(0xFF4F9F62),
+          ),
+        ];
+
+        return SizedBox(
+          height: 118,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: stats.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 10),
+            itemBuilder: (context, index) => StatCard(stats[index]),
+          ),
+        );
+      },
     );
   }
 }
@@ -2887,56 +3569,97 @@ class StatCard extends StatelessWidget {
 }
 
 class PrescriptionChartCard extends StatelessWidget {
-  const PrescriptionChartCard({super.key});
+  const PrescriptionChartCard({required this.api, super.key});
+
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: api.list('prescriptions'),
+      builder: (context, snapshot) {
+        final prescriptions = snapshot.data ?? [];
+        final prescribed = List<double>.filled(7, 0);
+        final dispensed = List<double>.filled(7, 0);
+        final now = DateTime.now();
+        for (final item in prescriptions) {
+          final date = DateTime.tryParse(
+            item['prescription_date'] as String? ?? '',
+          );
+          if (date == null) {
+            continue;
+          }
+          final diff = now.difference(date).inDays;
+          if (diff < 0 || diff > 6) {
+            continue;
+          }
+          final index = 6 - diff;
+          prescribed[index] += 1;
+          if ((item['status'] as String? ?? '') == 'Dispensed') {
+            dispensed[index] += 1;
+          }
+        }
+
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    'Prescription Overview',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Prescription Overview',
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                    const Text('Last 7 days'),
+                    if (snapshot.connectionState != ConnectionState.done)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Row(
+                  children: [
+                    LegendDot(color: Color(0xFF46A184), label: 'Prescriptions'),
+                    SizedBox(width: 18),
+                    LegendDot(color: Color(0xFF2476D2), label: 'Dispensed'),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                SizedBox(
+                  height: 180,
+                  width: double.infinity,
+                  child: CustomPaint(
+                    painter: LineChartPainter(
+                      prescribed: prescribed,
+                      dispensed: dispensed,
                     ),
                   ),
                 ),
-                const Text('This Week'),
-                const Icon(Icons.keyboard_arrow_down),
               ],
             ),
-            const SizedBox(height: 8),
-            const Row(
-              children: [
-                LegendDot(color: Color(0xFF46A184), label: 'Prescriptions'),
-                SizedBox(width: 18),
-                LegendDot(color: Color(0xFF2476D2), label: 'Dispensed'),
-              ],
-            ),
-            const SizedBox(height: 14),
-            SizedBox(
-              height: 180,
-              width: double.infinity,
-              child: CustomPaint(painter: LineChartPainter()),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
 
 class LineChartPainter extends CustomPainter {
-  const LineChartPainter();
+  const LineChartPainter({required this.prescribed, required this.dispensed});
 
-  static const List<double> prescribed = [28, 38, 37, 45, 35, 41, 34];
-  static const List<double> dispensed = [13, 19, 21, 30, 20, 22, 17];
+  final List<double> prescribed;
+  final List<double> dispensed;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -2996,7 +3719,11 @@ class LineChartPainter extends CustomPainter {
   ) {
     final path = Path();
     final fill = Path();
-    final maxValue = 55.0;
+    final maxValue = [
+      ...prescribed,
+      ...dispensed,
+      1.0,
+    ].reduce((a, b) => a > b ? a : b);
 
     Offset point(int index) {
       final x = chart.left + chart.width * index / (values.length - 1);
@@ -3039,7 +3766,9 @@ class LineChartPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant LineChartPainter oldDelegate) =>
+      oldDelegate.prescribed != prescribed ||
+      oldDelegate.dispensed != dispensed;
 }
 
 class LegendDot extends StatelessWidget {
@@ -3066,7 +3795,9 @@ class LegendDot extends StatelessWidget {
 }
 
 class CareBanner extends StatelessWidget {
-  const CareBanner({super.key});
+  const CareBanner({required this.api, super.key});
+
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
@@ -3105,10 +3836,7 @@ class CareBanner extends StatelessWidget {
                 ),
                 const Spacer(),
                 FilledButton.tonal(
-                  onPressed: () => showFeatureMessage(
-                    context,
-                    'PharmaCare manages patients, prescriptions, inventory, and refills.',
-                  ),
+                  onPressed: () => _showSystemSummary(context),
                   child: const Text('Learn More'),
                 ),
               ],
@@ -3117,6 +3845,62 @@ class CareBanner extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _showSystemSummary(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final data = await Future.wait([
+        api.list('patients'),
+        api.list('prescriptions'),
+        api.list('medications'),
+        api.list('refill-requests'),
+      ]);
+      if (!context.mounted) {
+        return;
+      }
+      await showModalBottomSheet<void>(
+        context: context,
+        builder: (context) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'System Summary',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 12),
+              InfoRow(
+                icon: Icons.groups_2_outlined,
+                label: 'Patients',
+                value: '${data[0].length}',
+              ),
+              InfoRow(
+                icon: Icons.receipt_long_outlined,
+                label: 'Prescriptions',
+                value: '${data[1].length}',
+              ),
+              InfoRow(
+                icon: Icons.medication_outlined,
+                label: 'Medications',
+                value: '${data[2].length}',
+              ),
+              InfoRow(
+                icon: Icons.sync,
+                label: 'Refill requests',
+                value: '${data[3].length}',
+              ),
+            ],
+          ),
+        ),
+      );
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
   }
 }
 
@@ -3210,10 +3994,9 @@ class CareBannerPainter extends CustomPainter {
 }
 
 class SectionHeader extends StatelessWidget {
-  const SectionHeader({required this.title, this.action, super.key});
+  const SectionHeader({required this.title, super.key});
 
   final String title;
-  final String? action;
 
   @override
   Widget build(BuildContext context) {
@@ -3227,12 +4010,6 @@ class SectionHeader extends StatelessWidget {
             ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
           ),
         ),
-        if (action != null)
-          TextButton(
-            onPressed: () =>
-                showFeatureMessage(context, '$action section is available from navigation.'),
-            child: Text(action!),
-          ),
       ],
     );
   }
@@ -3510,10 +4287,7 @@ class RefillTile extends StatelessWidget {
           children: [
             Row(
               children: [
-                InitialAvatar(
-                  name: refill.patient,
-                  color: refill.statusColor,
-                ),
+                InitialAvatar(name: refill.patient, color: refill.statusColor),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -3802,40 +4576,150 @@ class EmptyCard extends StatelessWidget {
 }
 
 class PatientSummaryStrip extends StatelessWidget {
-  const PatientSummaryStrip({super.key});
+  const PatientSummaryStrip({required this.api, super.key});
+
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: const [
-        Expanded(
-          child: SummaryPill(
-            icon: Icons.receipt_long_outlined,
-            value: '3',
-            label: 'Active Rx',
-          ),
-        ),
-        SizedBox(width: 10),
-        Expanded(
-          child: SummaryPill(icon: Icons.sync, value: '1', label: 'Refill'),
-        ),
-        SizedBox(width: 10),
-        Expanded(
-          child: SummaryPill(
-            icon: Icons.notifications_outlined,
-            value: '4',
-            label: 'Alerts',
-          ),
-        ),
-      ],
+    return FutureBuilder<List<List<Map<String, dynamic>>>>(
+      future: Future.wait([
+        api.list('prescriptions'),
+        api.list('refill-requests'),
+        api.list('notifications'),
+      ]),
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+        final prescriptions = data?[0] ?? [];
+        final refills = data?[1] ?? [];
+        final notifications = data?[2] ?? [];
+        final activeRx = prescriptions
+            .map(prescriptionFromApi)
+            .where(
+              (prescription) =>
+                  prescription.status == 'Pending' ||
+                  prescription.status == 'Active',
+            )
+            .length;
+        final pendingRefills = refills
+            .where((item) => (item['status'] as String? ?? '') == 'Pending')
+            .length;
+        final unreadAlerts = notifications
+            .where(
+              (item) => (item['status'] as String? ?? 'Unread') == 'Unread',
+            )
+            .length;
+
+        return Row(
+          children: [
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.receipt_long_outlined,
+                value: snapshot.connectionState == ConnectionState.done
+                    ? '$activeRx'
+                    : '...',
+                label: 'Active Rx',
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.sync,
+                value: snapshot.connectionState == ConnectionState.done
+                    ? '$pendingRefills'
+                    : '...',
+                label: 'Refill',
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.notifications_outlined,
+                value: snapshot.connectionState == ConnectionState.done
+                    ? '$unreadAlerts'
+                    : '...',
+                label: 'Alerts',
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class AdminSummaryStrip extends StatelessWidget {
+  const AdminSummaryStrip({required this.api, super.key});
+
+  final ApiClient api;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<List<List<Map<String, dynamic>>>>(
+      future: Future.wait([
+        api.list('medications'),
+        api.list('refill-requests'),
+        api.list('audit-logs'),
+      ]),
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+        final medications = data?[0] ?? [];
+        final refills = data?[1] ?? [];
+        final auditLogs = data?[2] ?? [];
+        final lowStock = medications
+            .map(medicationFromApi)
+            .where((medication) => medication.status == 'Low Stock')
+            .length;
+        final pendingRefills = refills
+            .where((item) => (item['status'] as String? ?? '') == 'Pending')
+            .length;
+
+        String value(int count) =>
+            snapshot.connectionState == ConnectionState.done ? '$count' : '...';
+
+        return Row(
+          children: [
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.inventory_2_outlined,
+                value: value(medications.length),
+                label: 'Items',
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.warning_amber_rounded,
+                value: value(lowStock),
+                label: 'Low stock',
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: SummaryPill(
+                icon: Icons.fact_check_outlined,
+                value: value(pendingRefills + auditLogs.length),
+                label: 'Activity',
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
 
 class PatientPrescriptionCard extends StatelessWidget {
-  const PatientPrescriptionCard(this.prescription, {super.key});
+  const PatientPrescriptionCard(
+    this.prescription, {
+    this.onRequestRefill,
+    this.onExport,
+    super.key,
+  });
 
   final Prescription prescription;
+  final VoidCallback? onRequestRefill;
+  final VoidCallback? onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -3896,10 +4780,7 @@ class PatientPrescriptionCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: FilledButton.tonalIcon(
-                    onPressed: () => showFeatureMessage(
-                      context,
-                      'Open the Refills tab to submit a refill request.',
-                    ),
+                    onPressed: onRequestRefill,
                     icon: const Icon(Icons.sync),
                     label: const Text('Request Refill'),
                   ),
@@ -3907,10 +4788,7 @@ class PatientPrescriptionCard extends StatelessWidget {
                 const SizedBox(width: 10),
                 IconButton.filledTonal(
                   tooltip: 'Download',
-                  onPressed: () => showFeatureMessage(
-                    context,
-                    'Prescription download will be enabled when PDF export is added.',
-                  ),
+                  onPressed: onExport,
                   icon: const Icon(Icons.download_outlined),
                 ),
               ],
@@ -3934,7 +4812,7 @@ class RefillRequestForm extends StatefulWidget {
 
 class _RefillRequestFormState extends State<RefillRequestForm> {
   final _notesController = TextEditingController();
-  int _prescriptionId = 1;
+  int? _prescriptionId;
   bool _loading = false;
   String? _message;
   Color _messageColor = const Color(0xFF07827D);
@@ -3960,20 +4838,55 @@ class _RefillRequestFormState extends State<RefillRequestForm> {
               ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 12),
-            DropdownButtonFormField<int>(
-              initialValue: _prescriptionId,
-              decoration: const InputDecoration(
-                labelText: 'Prescription',
-                prefixIcon: Icon(Icons.receipt_long_outlined),
-              ),
-              items: [
-                for (final rx in recentPrescriptions.take(3).toList().asMap().entries)
-                  DropdownMenuItem(
-                    value: rx.key + 1,
-                    child: Text(rx.value.medication),
+            FutureBuilder<List<Map<String, dynamic>>>(
+              future: widget.api.list('prescriptions'),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const LinearProgressIndicator();
+                }
+                if (snapshot.hasError) {
+                  return StatusMessage(
+                    message: snapshot.error.toString(),
+                    color: const Color(0xFFD24D57),
+                  );
+                }
+                final prescriptions = (snapshot.data ?? [])
+                    .map(prescriptionFromApi)
+                    .toList();
+                if (prescriptions.isEmpty) {
+                  return const StatusMessage(
+                    message: 'No prescription available for refill.',
+                    color: Color(0xFFD24D57),
+                  );
+                }
+                final selectedId =
+                    prescriptions.any((item) => item.rxId == _prescriptionId)
+                    ? _prescriptionId
+                    : prescriptions.first.rxId;
+                if (_prescriptionId != selectedId) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                      setState(() => _prescriptionId = selectedId);
+                    }
+                  });
+                }
+
+                return DropdownButtonFormField<int>(
+                  initialValue: selectedId,
+                  decoration: const InputDecoration(
+                    labelText: 'Prescription',
+                    prefixIcon: Icon(Icons.receipt_long_outlined),
                   ),
-              ],
-              onChanged: (value) => setState(() => _prescriptionId = value ?? 1),
+                  items: [
+                    for (final rx in prescriptions)
+                      DropdownMenuItem(
+                        value: rx.rxId,
+                        child: Text(rx.medication),
+                      ),
+                  ],
+                  onChanged: (value) => setState(() => _prescriptionId = value),
+                );
+              },
             ),
             const SizedBox(height: 10),
             TextField(
@@ -4011,13 +4924,21 @@ class _RefillRequestFormState extends State<RefillRequestForm> {
   }
 
   Future<void> _submit() async {
+    final prescriptionId = _prescriptionId;
+    if (prescriptionId == null) {
+      setState(() {
+        _message = 'Please select a prescription first.';
+        _messageColor = const Color(0xFFD24D57);
+      });
+      return;
+    }
     setState(() {
       _loading = true;
       _message = null;
     });
     try {
       await widget.api.post('refill-requests', {
-        'prescription_id': _prescriptionId,
+        'prescription_id': prescriptionId,
         'notes': _notesController.text.trim(),
       });
       setState(() {
@@ -4080,6 +5001,8 @@ class PreferenceTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.enabled,
+    required this.onChanged,
+    this.busy = false,
     super.key,
   });
 
@@ -4087,15 +5010,14 @@ class PreferenceTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool enabled;
+  final ValueChanged<bool> onChanged;
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
     return SwitchListTile(
       value: enabled,
-      onChanged: (_) => showFeatureMessage(
-        context,
-        'Notification preference saved for the demo session.',
-      ),
+      onChanged: busy ? null : onChanged,
       secondary: Icon(icon),
       title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
       subtitle: Text(subtitle),
@@ -4106,7 +5028,9 @@ class PreferenceTile extends StatelessWidget {
 }
 
 class QuickActionsGrid extends StatelessWidget {
-  const QuickActionsGrid({super.key});
+  const QuickActionsGrid({required this.api, super.key});
+
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
@@ -4118,24 +5042,22 @@ class QuickActionsGrid extends StatelessWidget {
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       children: quickActions
-          .map((action) => QuickActionButton(action))
+          .map((action) => QuickActionButton(action, api: api))
           .toList(),
     );
   }
 }
 
 class QuickActionButton extends StatelessWidget {
-  const QuickActionButton(this.action, {super.key});
+  const QuickActionButton(this.action, {required this.api, super.key});
 
   final QuickAction action;
+  final ApiClient api;
 
   @override
   Widget build(BuildContext context) {
     return FilledButton.tonalIcon(
-      onPressed: () => showFeatureMessage(
-        context,
-        '${action.label} action is ready for backend workflow integration.',
-      ),
+      onPressed: () => _run(context),
       icon: Icon(action.icon, color: action.color),
       label: Text(action.label, overflow: TextOverflow.ellipsis),
       style: FilledButton.styleFrom(
@@ -4145,6 +5067,80 @@ class QuickActionButton extends StatelessWidget {
         side: BorderSide(color: action.color.withValues(alpha: .14)),
       ),
     );
+  }
+
+  Future<void> _run(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final String report;
+      switch (action.label) {
+        case 'Rx Report':
+          final prescriptions = (await api.list(
+            'prescriptions',
+          )).map(prescriptionFromApi).toList();
+          report = [
+            'PharmaCare Prescription Report',
+            for (final item in prescriptions)
+              '${item.id} | ${item.patient} | ${item.medication} | ${item.status}',
+          ].join('\n');
+          break;
+        case 'Patients':
+          final patients = (await api.list('patients')).map(patientFromApi);
+          report = [
+            'PharmaCare Patient List',
+            for (final item in patients)
+              '${item.id} | ${item.name} | ${item.contact} | ${item.email}',
+          ].join('\n');
+          break;
+        case 'Pending Refills':
+          final refills = (await api.list(
+            'refill-requests',
+          )).map(refillFromApi).where((item) => item.status == 'Pending');
+          report = [
+            'Pending Refill Requests',
+            for (final item in refills)
+              '#${item.id} | ${item.patient} | ${item.medication} | ${item.date}',
+          ].join('\n');
+          break;
+        case 'Inventory':
+          final medications = (await api.list(
+            'medications',
+          )).map(medicationFromApi);
+          report = [
+            'PharmaCare Inventory',
+            for (final item in medications)
+              '${item.id} | ${item.name} | Stock: ${item.stock} | ${item.status}',
+          ].join('\n');
+          break;
+        case 'Low Stock':
+          final medications = (await api.list(
+            'medications',
+          )).map(medicationFromApi).where((item) => item.status == 'Low Stock');
+          report = [
+            'Low Stock Medications',
+            for (final item in medications)
+              '${item.name} | Stock: ${item.stock} | Reorder: ${item.reorderLevel}',
+          ].join('\n');
+          break;
+        default:
+          final logs = (await api.list('audit-logs')).map(auditFromApi);
+          report = [
+            'PharmaCare Audit Summary',
+            for (final item in logs)
+              '${item.dateTime} | ${item.userRole} | ${item.action}',
+          ].join('\n');
+          break;
+      }
+      await Clipboard.setData(ClipboardData(text: report));
+      if (!context.mounted) {
+        return;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text('${action.label} copied.')),
+      );
+    } catch (err) {
+      messenger.showSnackBar(SnackBar(content: Text(err.toString())));
+    }
   }
 }
 
@@ -4557,7 +5553,8 @@ Prescription prescriptionFromApi(Map<String, dynamic> item) {
   final status = item['status'] as String? ?? 'Pending';
   return Prescription(
     rxId: intFrom(item, 'prescription_id'),
-    patient: item['patient_name'] as String? ?? 'Patient #${item['patient_id']}',
+    patient:
+        item['patient_name'] as String? ?? 'Patient #${item['patient_id']}',
     id: 'RX-${item['prescription_id']}',
     date: item['prescription_date'] as String? ?? '',
     status: status,
@@ -4951,10 +5948,10 @@ const auditLogs = [
 ];
 
 const quickActions = [
-  QuickAction('New Rx', Icons.add_circle_outline, Color(0xFF07827D)),
-  QuickAction('Add Patient', Icons.person_add_alt_1, Color(0xFF2476D2)),
-  QuickAction('Refill', Icons.sync, Color(0xFFE5A923)),
-  QuickAction('Add Med', Icons.medication_outlined, Color(0xFF8E6AD8)),
-  QuickAction('Stock In', Icons.download_outlined, Color(0xFF2476D2)),
-  QuickAction('Reports', Icons.bar_chart, Color(0xFF4F9F62)),
+  QuickAction('Rx Report', Icons.receipt_long_outlined, Color(0xFF07827D)),
+  QuickAction('Patients', Icons.person_search_outlined, Color(0xFF2476D2)),
+  QuickAction('Pending Refills', Icons.sync, Color(0xFFE5A923)),
+  QuickAction('Inventory', Icons.medication_outlined, Color(0xFF8E6AD8)),
+  QuickAction('Low Stock', Icons.warning_amber_rounded, Color(0xFFD24D57)),
+  QuickAction('Audit Summary', Icons.bar_chart, Color(0xFF4F9F62)),
 ];

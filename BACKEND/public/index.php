@@ -213,6 +213,15 @@ function migrate(PDO $pdo): void
             FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+            patient_id INTEGER PRIMARY KEY,
+            medication_reminders INTEGER NOT NULL DEFAULT 1,
+            refill_updates INTEGER NOT NULL DEFAULT 1,
+            safety_alerts INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS drug_interactions (
             interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
             medication1_id INTEGER NOT NULL,
@@ -356,6 +365,15 @@ function migrateMysql(PDO $pdo): void
             date_sent DATETIME NOT NULL,
             status VARCHAR(50) NOT NULL DEFAULT 'Unread',
             CONSTRAINT fk_notifications_patient FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+            patient_id INT UNSIGNED PRIMARY KEY,
+            medication_reminders TINYINT(1) NOT NULL DEFAULT 1,
+            refill_updates TINYINT(1) NOT NULL DEFAULT 1,
+            safety_alerts TINYINT(1) NOT NULL DEFAULT 1,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            CONSTRAINT fk_notification_preferences_patient FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
         CREATE TABLE IF NOT EXISTS drug_interactions (
@@ -601,6 +619,7 @@ function dispatch(PDO $pdo): void
     refills($pdo, $method, $parts, $user);
     dispensing($pdo, $method, $parts, $user);
     notifications($pdo, $method, $parts, $user);
+    notificationPreferences($pdo, $method, $parts, $user);
     readonly($pdo, $method, $parts, 'drug-interactions', 'drug_interactions', $user);
     readonly($pdo, $method, $parts, 'audit-logs', 'audit_logs', $user, ['admin', 'pharmacist']);
 
@@ -719,6 +738,11 @@ function resource(PDO $pdo, string $method, array $parts, string $table, string 
             json(['data' => [findRow($pdo, $table, $pk, (int) $user['patient_id'])]]);
         }
         if ($method === 'GET' && count($parts) === 2 && (int) $parts[1] === (int) $user['patient_id']) {
+            json(['data' => findRow($pdo, $table, $pk, (int) $parts[1])]);
+        }
+        if ($method === 'PUT' && count($parts) === 2 && (int) $parts[1] === (int) $user['patient_id']) {
+            update($pdo, $table, $pk, (int) $parts[1], body());
+            audit($pdo, $user, 'Updated patient profile', "Updated patient profile #{$parts[1]}");
             json(['data' => findRow($pdo, $table, $pk, (int) $parts[1])]);
         }
         json(['error' => 'Forbidden'], 403);
@@ -1002,14 +1026,28 @@ function refills(PDO $pdo, string $method, array $parts, array $user): void
         json(['data' => query($pdo, $sql . ' ORDER BY r.refill_id DESC', $params)]);
     }
     if ($method === 'POST' && count($parts) === 1) {
-        $data = body();
+        $body = body();
+        $prescriptionId = (int) ($body['prescription_id'] ?? 0);
+        if ($prescriptionId <= 0) {
+            json(['error' => 'Prescription is required'], 422);
+        }
+        $prescription = findRow($pdo, 'prescriptions', 'prescription_id', $prescriptionId);
         if ($user['role'] === 'patient') {
-            $data['patient_id'] = $user['patient_id'];
+            if ((int) $prescription['patient_id'] !== (int) $user['patient_id']) {
+                json(['error' => 'Selected prescription does not belong to your account'], 403);
+            }
+            $patientId = (int) $user['patient_id'];
         } else {
             requireRole($user, ['admin', 'pharmacist']);
+            $patientId = (int) ($body['patient_id'] ?? $prescription['patient_id']);
         }
-        $data['request_date'] ??= date('Y-m-d');
-        $data['status'] ??= 'Pending';
+        $data = [
+            'patient_id' => $patientId,
+            'prescription_id' => $prescriptionId,
+            'request_date' => $body['request_date'] ?? date('Y-m-d'),
+            'status' => $body['status'] ?? 'Pending',
+            'notes' => $body['notes'] ?? null,
+        ];
         $id = insert($pdo, 'refill_requests', $data);
         audit($pdo, $user, 'Created refill request', "Created refill request #$id");
         json(['data' => findRow($pdo, 'refill_requests', 'refill_id', $id)], 201);
@@ -1059,6 +1097,50 @@ function notifications(PDO $pdo, string $method, array $parts, array $user): voi
     if ($method === 'PUT' && count($parts) === 3 && $parts[2] === 'read') {
         update($pdo, 'notifications', 'notification_id', (int) $parts[1], ['status' => 'Read']);
         json(['data' => findRow($pdo, 'notifications', 'notification_id', (int) $parts[1])]);
+    }
+}
+
+function notificationPreferences(PDO $pdo, string $method, array $parts, array $user): void
+{
+    if (($parts[0] ?? '') !== 'notification-preferences') {
+        return;
+    }
+    requireRole($user, ['patient']);
+    $patientId = (int) ($user['patient_id'] ?? 0);
+    if ($patientId <= 0) {
+        json(['error' => 'Patient profile is required'], 422);
+    }
+
+    $row = queryOne($pdo, 'SELECT * FROM notification_preferences WHERE patient_id = ? LIMIT 1', [$patientId]);
+    if (!$row) {
+        insert($pdo, 'notification_preferences', [
+            'patient_id' => $patientId,
+            'medication_reminders' => 1,
+            'refill_updates' => 1,
+            'safety_alerts' => 1,
+        ]);
+        $row = queryOne($pdo, 'SELECT * FROM notification_preferences WHERE patient_id = ? LIMIT 1', [$patientId]);
+    }
+
+    if ($method === 'GET') {
+        json(['data' => $row]);
+    }
+
+    if ($method === 'PUT') {
+        $body = body();
+        $data = [];
+        foreach (['medication_reminders', 'refill_updates', 'safety_alerts'] as $key) {
+            if (array_key_exists($key, $body)) {
+                $data[$key] = (int) (bool) $body[$key];
+            }
+        }
+        if (!$data) {
+            json(['data' => $row]);
+        }
+        $data['updated_at'] = date('Y-m-d H:i:s');
+        update($pdo, 'notification_preferences', 'patient_id', $patientId, $data);
+        audit($pdo, $user, 'Updated notification preferences', 'Updated patient notification preferences.');
+        json(['data' => queryOne($pdo, 'SELECT * FROM notification_preferences WHERE patient_id = ? LIMIT 1', [$patientId])]);
     }
 }
 
