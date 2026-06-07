@@ -7,7 +7,7 @@ const DB_FILE = BASE_DIR . '/storage/pharmacare.sqlite';
 
 loadEnv();
 
-header('Access-Control-Allow-Origin: ' . env('FRONTEND_ORIGIN', '*'));
+header('Access-Control-Allow-Origin: ' . corsOrigin());
 header('Access-Control-Allow-Headers: Authorization, Content-Type');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Content-Type: application/json');
@@ -83,6 +83,17 @@ function loadEnv(): void
 function env(string $key, string $default = ''): string
 {
     return $_ENV[$key] ?? getenv($key) ?: $default;
+}
+
+function corsOrigin(): string
+{
+    $origin = trim(env('FRONTEND_ORIGIN', '*'));
+
+    if (str_starts_with($origin, 'FRONTEND_ORIGIN=')) {
+        $origin = trim(substr($origin, strlen('FRONTEND_ORIGIN=')));
+    }
+
+    return $origin === '' ? '*' : $origin;
 }
 
 function migrate(PDO $pdo): void
